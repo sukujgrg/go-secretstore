@@ -1,0 +1,6 @@
+go-secretstore
+Copyright 2026 sukujgrg
+
+This project includes design and implementation adapted from
+github.com/credbind/credbind-go/secretstore (Apache-2.0) and API patterns
+from github.com/zalando/go-keyring (Apache-2.0).
