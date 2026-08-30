@@ -4,11 +4,11 @@
 // user's native protected secret store.
 //
 // There is no file, environment, command-line, or alternate-store fallback.
-// CGO is required on each supported platform:
+// Native backends are:
 //
-//   - macOS: Security.framework generic passwords
-//   - Linux: libsecret / Freedesktop Secret Service
-//   - Windows: Credential Manager via advapi32
+//   - macOS: Security.framework generic passwords (CGO)
+//   - Linux: libsecret / Freedesktop Secret Service (CGO)
+//   - Windows: Credential Manager via advapi32 syscalls (no CGO)
 //
 // OpenMemory provides an in-memory Store for tests, following the same
 // contract as the native backends.

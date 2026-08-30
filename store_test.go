@@ -230,7 +230,7 @@ func TestGetDeleteValidationAndClosedStore(t *testing.T) {
 
 func TestSetOverwriteAndKeyIsolation(t *testing.T) {
 	store := OpenMemory()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	alice := Key{Service: "svc", Account: "alice"}
 	bob := Key{Service: "svc", Account: "bob"}
 	other := Key{Service: "other", Account: "alice"}
@@ -253,7 +253,7 @@ func TestSetOverwriteAndKeyIsolation(t *testing.T) {
 
 func TestBinaryAndMultilineSecret(t *testing.T) {
 	store := OpenMemory()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	key := Key{Service: "svc", Account: "bin"}
 	value := []byte("line1\nline2\x00\xff\xfe")
 	if err := store.Set(context.Background(), key, value); err != nil {
@@ -263,7 +263,7 @@ func TestBinaryAndMultilineSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer secret.Close()
+	defer func() { _ = secret.Close() }()
 	got, err := secret.Bytes()
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +275,7 @@ func TestBinaryAndMultilineSecret(t *testing.T) {
 
 func TestKeyMaxLength(t *testing.T) {
 	store := OpenMemory()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ok := Key{Service: strings.Repeat("s", maxKeyPartBytes), Account: strings.Repeat("a", maxKeyPartBytes)}
 	if err := store.Set(context.Background(), ok, []byte("x")); err != nil {
 		t.Fatal(err)
@@ -320,7 +320,7 @@ func TestMemoryCloseClearsValues(t *testing.T) {
 
 func TestStoreConcurrent(t *testing.T) {
 	store := OpenMemory()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
@@ -371,7 +371,7 @@ func mustSecret(t *testing.T, store Store, key Key, want string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer secret.Close()
+	defer func() { _ = secret.Close() }()
 	got, err := secret.Bytes()
 	if err != nil {
 		t.Fatal(err)

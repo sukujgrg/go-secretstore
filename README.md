@@ -1,21 +1,25 @@
 # go-secretstore
 
-[![CI](https://github.com/sukujgrg/go-secretstore/actions/workflows/ci.yml/badge.svg)](https://github.com/sukujgrg/go-secretstore/actions/workflows/ci.yml)
+[![CI](https://github.com/sukujgrg/go-secretstore/workflows/CI/badge.svg)](https://github.com/sukujgrg/go-secretstore/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/sukujgrg/go-secretstore.svg)](https://pkg.go.dev/github.com/sukujgrg/go-secretstore)
 
 A small Go library for the current user's native protected secret store.
-Module path: `github.com/sukujgrg/go-secretstore`.
+
+- Docs: [pkg.go.dev/github.com/sukujgrg/go-secretstore](https://pkg.go.dev/github.com/sukujgrg/go-secretstore)
+- CI: [github.com/sukujgrg/go-secretstore/actions](https://github.com/sukujgrg/go-secretstore/actions/workflows/ci.yml) (latest `main` run [succeeded](https://github.com/sukujgrg/go-secretstore/actions/runs/33289240207))
 
 There is **no file, environment, command-line, or alternate-store fallback**.
-CGO talks to the OS store on each supported platform. There are **no Go module
-dependencies**.
+There are **no Go module dependencies**. macOS and Linux use CGO; Windows uses
+stdlib syscalls.
 
 | Platform | Backend | Build requirement |
 | --- | --- | --- |
 | macOS | Security.framework generic passwords | CGO, `Security` + `CoreFoundation` |
 | Linux | libsecret / Freedesktop Secret Service | CGO, `pkg-config` `libsecret-1` |
-| Windows | Credential Manager (`CredReadW` / `CredWriteW` / `CredDeleteW`) | CGO, `advapi32` |
+| Windows | Credential Manager (`CredReadW` / `CredWriteW` / `CredDeleteW`) | stdlib `syscall` + `advapi32` (no CGO) |
 
-A `CGO_ENABLED=0` build compiles, but `Open` returns `unsupported`.
+A `CGO_ENABLED=0` build compiles everywhere. On macOS and Linux, `Open` then
+returns `unsupported`. On Windows the syscall backend still works.
 
 ## Library
 
@@ -80,6 +84,7 @@ make build
 | `make build` | CGO-enabled `bin/secretstore` |
 | `make test` | unit tests (in-memory store) |
 | `make test-native` | live Get/Set/Delete against the OS store |
+| `make lint` | `golangci-lint` for the current OS and Windows |
 | `make smoke` | build, then set/get/delete `go-secretstore.smoke` / `local-test` |
 | `make vet` | `go vet` |
 | `make clean` | remove `bin/` |

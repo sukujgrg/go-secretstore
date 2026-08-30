@@ -15,7 +15,7 @@ func ExampleOpen() {
 	if err != nil {
 		return
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	secret, err := store.Get(ctx, secretstore.Key{
 		Service: "example.app",
 		Account: "deployment/client",
@@ -23,7 +23,7 @@ func ExampleOpen() {
 	if err != nil {
 		return
 	}
-	defer secret.Close()
+	defer func() { _ = secret.Close() }()
 	value, err := secret.Bytes()
 	if err != nil {
 		return
@@ -34,14 +34,14 @@ func ExampleOpen() {
 
 func ExampleOpenMemory() {
 	store := secretstore.OpenMemory()
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	ctx := context.Background()
 	_ = store.Set(ctx, secretstore.Key{Service: "example.app", Account: "alice"}, []byte("secret"))
 	secret, err := store.Get(ctx, secretstore.Key{Service: "example.app", Account: "alice"})
 	if err != nil {
 		return
 	}
-	defer secret.Close()
+	defer func() { _ = secret.Close() }()
 }
 
 func ExampleSet() {
@@ -53,6 +53,6 @@ func ExampleSet() {
 	if err != nil {
 		return
 	}
-	defer secret.Close()
+	defer func() { _ = secret.Close() }()
 	_ = secretstore.Delete(ctx, "example.app", "alice")
 }
