@@ -4,9 +4,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/sukujgrg/go-secretstore.svg)](https://pkg.go.dev/github.com/sukujgrg/go-secretstore)
 
 A small Go library for the current user's native protected secret store.
-
-- Docs: [pkg.go.dev/github.com/sukujgrg/go-secretstore](https://pkg.go.dev/github.com/sukujgrg/go-secretstore)
-- CI: [github.com/sukujgrg/go-secretstore/actions](https://github.com/sukujgrg/go-secretstore/actions/workflows/ci.yml) (latest `main` run [succeeded](https://github.com/sukujgrg/go-secretstore/actions/runs/33289240207))
+Module path: `github.com/sukujgrg/go-secretstore`.
 
 There is **no file, environment, command-line, or alternate-store fallback**.
 There are **no Go module dependencies**. macOS and Linux use CGO; Windows uses
