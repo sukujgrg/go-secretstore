@@ -84,6 +84,7 @@ make build
 | `make build` | CGO-enabled `bin/secretstore` |
 | `make test` | unit tests (in-memory store) |
 | `make test-native` | live Get/Set/Delete against the OS store |
+| `make lint` | `golangci-lint` for the current OS and Windows |
 | `make smoke` | build, then set/get/delete `go-secretstore.smoke` / `local-test` |
 | `make vet` | `go vet` |
 | `make clean` | remove `bin/` |
