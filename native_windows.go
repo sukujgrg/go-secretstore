@@ -1,94 +1,51 @@
 // SPDX-License-Identifier: Apache-2.0
-//go:build windows && cgo
+//go:build windows
 
 package secretstore
 
-/*
-#cgo LDFLAGS: -ladvapi32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <wincred.h>
-#include <stdlib.h>
-#include <string.h>
-
-#define SS_WIN_MAX_BLOB (5 * 512)
-
-static LPWSTR ss_utf16(const void *bytes, size_t len) {
-	if (len == 0 || len > 0x7fffffff) return NULL;
-	int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (LPCCH)bytes, (int)len, NULL, 0);
-	if (n <= 0) return NULL;
-	LPWSTR out = (LPWSTR)malloc(((size_t)n + 1) * sizeof(WCHAR));
-	if (out == NULL) return NULL;
-	int written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (LPCCH)bytes, (int)len, out, n);
-	if (written <= 0) {
-		free(out);
-		return NULL;
-	}
-	out[written] = 0;
-	return out;
-}
-
-DWORD ss_cred_read(const void *target, size_t target_len, void **output, size_t *output_len) {
-	*output = NULL;
-	*output_len = 0;
-	LPWSTR name = ss_utf16(target, target_len);
-	if (name == NULL) return ERROR_INVALID_PARAMETER;
-	PCREDENTIALW cred = NULL;
-	if (!CredReadW(name, CRED_TYPE_GENERIC, 0, &cred)) {
-		DWORD err = GetLastError();
-		free(name);
-		return err;
-	}
-	free(name);
-	if (cred == NULL || cred->CredentialBlobSize == 0 || cred->CredentialBlob == NULL ||
-		cred->CredentialBlobSize > SS_WIN_MAX_BLOB) {
-		if (cred != NULL) CredFree(cred);
-		return ERROR_INVALID_PARAMETER;
-	}
-	void *copy = malloc(cred->CredentialBlobSize);
-	if (copy == NULL) {
-		CredFree(cred);
-		return ERROR_NOT_ENOUGH_MEMORY;
-	}
-	memcpy(copy, cred->CredentialBlob, cred->CredentialBlobSize);
-	*output = copy;
-	*output_len = (size_t)cred->CredentialBlobSize;
-	CredFree(cred);
-	return ERROR_SUCCESS;
-}
-
-DWORD ss_cred_write(const void *target, size_t target_len, const void *value, size_t value_len) {
-	if (value_len == 0 || value_len > SS_WIN_MAX_BLOB) return ERROR_INVALID_PARAMETER;
-	LPWSTR name = ss_utf16(target, target_len);
-	if (name == NULL) return ERROR_INVALID_PARAMETER;
-	CREDENTIALW cred;
-	ZeroMemory(&cred, sizeof(cred));
-	cred.Type = CRED_TYPE_GENERIC;
-	cred.TargetName = name;
-	cred.CredentialBlobSize = (DWORD)value_len;
-	cred.CredentialBlob = (LPBYTE)value;
-	cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
-	BOOL ok = CredWriteW(&cred, 0);
-	DWORD err = ok ? ERROR_SUCCESS : GetLastError();
-	free(name);
-	return err;
-}
-
-DWORD ss_cred_delete(const void *target, size_t target_len) {
-	LPWSTR name = ss_utf16(target, target_len);
-	if (name == NULL) return ERROR_INVALID_PARAMETER;
-	BOOL ok = CredDeleteW(name, CRED_TYPE_GENERIC, 0);
-	DWORD err = ok ? ERROR_SUCCESS : GetLastError();
-	free(name);
-	return err;
-}
-*/
-import "C"
-
 import (
 	"context"
+	"errors"
+	"runtime"
+	"syscall"
 	"unsafe"
 )
+
+const (
+	credentialTypeGeneric         = 1
+	credentialPersistLocalMachine = 2
+	maxCredentialBlobBytes        = 5 * 512
+	errnoNotFound                 = syscall.Errno(1168)
+	errnoNoSuchLogonSession       = syscall.Errno(1312)
+)
+
+var (
+	modadvapi32     = syscall.NewLazyDLL("advapi32.dll")
+	procCredReadW   = modadvapi32.NewProc("CredReadW")
+	procCredWriteW  = modadvapi32.NewProc("CredWriteW")
+	procCredDeleteW = modadvapi32.NewProc("CredDeleteW")
+	procCredFree    = modadvapi32.NewProc("CredFree")
+)
+
+type filetime struct {
+	LowDateTime  uint32
+	HighDateTime uint32
+}
+
+type credential struct {
+	Flags              uint32
+	Type               uint32
+	TargetName         *uint16
+	Comment            *uint16
+	LastWritten        filetime
+	CredentialBlobSize uint32
+	CredentialBlob     *byte
+	Persist            uint32
+	AttributeCount     uint32
+	Attributes         uintptr
+	TargetAlias        *uint16
+	UserName           *uint16
+}
 
 type credentialManagerBackend struct{}
 
@@ -106,20 +63,10 @@ func (b *credentialManagerBackend) get(ctx context.Context, key Key) ([]byte, er
 	if err := ctx.Err(); err != nil {
 		return nil, contextError("get", b.name(), err)
 	}
-	target := []byte(windowsTarget(key))
-	var output unsafe.Pointer
-	var outputLength C.size_t
-	status := C.ss_cred_read(unsafe.Pointer(&target[0]), C.size_t(len(target)), &output, &outputLength)
-	if output != nil {
-		defer C.free(output)
+	value, err := credRead(windowsTarget(key))
+	if err != nil {
+		return nil, b.mapError("get", err)
 	}
-	if status != C.ERROR_SUCCESS {
-		return nil, b.mapStatus("get", status)
-	}
-	if uint64(outputLength) > uint64(maxSecretBytes) {
-		return nil, storeError(ResourceLimit, "get", b.name(), nil)
-	}
-	value := C.GoBytes(output, C.int(outputLength))
 	if err := ctx.Err(); err != nil {
 		clear(value)
 		return nil, contextError("get", b.name(), err)
@@ -131,11 +78,8 @@ func (b *credentialManagerBackend) set(ctx context.Context, key Key, value []byt
 	if err := ctx.Err(); err != nil {
 		return contextError("set", b.name(), err)
 	}
-	target := []byte(windowsTarget(key))
-	status := C.ss_cred_write(unsafe.Pointer(&target[0]), C.size_t(len(target)),
-		unsafe.Pointer(&value[0]), C.size_t(len(value)))
-	if status != C.ERROR_SUCCESS {
-		return b.mapStatus("set", status)
+	if err := credWrite(windowsTarget(key), value); err != nil {
+		return b.mapError("set", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return contextError("set", b.name(), err)
@@ -147,10 +91,8 @@ func (b *credentialManagerBackend) delete(ctx context.Context, key Key) error {
 	if err := ctx.Err(); err != nil {
 		return contextError("delete", b.name(), err)
 	}
-	target := []byte(windowsTarget(key))
-	status := C.ss_cred_delete(unsafe.Pointer(&target[0]), C.size_t(len(target)))
-	if status != C.ERROR_SUCCESS {
-		return b.mapStatus("delete", status)
+	if err := credDelete(windowsTarget(key)); err != nil {
+		return b.mapError("delete", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return contextError("delete", b.name(), err)
@@ -160,17 +102,84 @@ func (b *credentialManagerBackend) delete(ctx context.Context, key Key) error {
 
 func (*credentialManagerBackend) close() error { return nil }
 
-func (b *credentialManagerBackend) mapStatus(op string, status C.DWORD) error {
-	switch status {
-	case C.ERROR_NOT_FOUND:
+func (b *credentialManagerBackend) mapError(op string, err error) error {
+	switch {
+	case errors.Is(err, errnoNotFound):
 		return storeError(NotFound, op, b.name(), nil)
-	case C.ERROR_ACCESS_DENIED:
+	case errors.Is(err, syscall.ERROR_ACCESS_DENIED):
 		return storeError(PermissionDenied, op, b.name(), nil)
-	case C.ERROR_NO_SUCH_LOGON_SESSION:
+	case errors.Is(err, errnoNoSuchLogonSession):
 		return storeError(Unsupported, op, b.name(), nil)
-	case C.ERROR_INVALID_PARAMETER, C.ERROR_NOT_ENOUGH_MEMORY:
+	case errors.Is(err, syscall.EINVAL):
 		return storeError(ResourceLimit, op, b.name(), nil)
 	default:
 		return storeError(BackendFailure, op, b.name(), nil)
 	}
+}
+
+func credRead(target string) ([]byte, error) {
+	targetName, err := syscall.UTF16PtrFromString(target)
+	if err != nil {
+		return nil, err
+	}
+	var result *credential
+	r1, _, e1 := syscall.SyscallN(procCredReadW.Addr(),
+		uintptr(unsafe.Pointer(targetName)),
+		uintptr(credentialTypeGeneric),
+		0,
+		uintptr(unsafe.Pointer(&result)))
+	if r1 == 0 {
+		return nil, errnoErr(e1)
+	}
+	defer syscall.SyscallN(procCredFree.Addr(), uintptr(unsafe.Pointer(result)))
+	if result == nil || result.CredentialBlobSize == 0 || result.CredentialBlobSize > maxCredentialBlobBytes || result.CredentialBlob == nil {
+		return nil, syscall.EINVAL
+	}
+	return append([]byte(nil), unsafe.Slice(result.CredentialBlob, int(result.CredentialBlobSize))...), nil
+}
+
+func credWrite(target string, value []byte) error {
+	if len(value) == 0 || len(value) > maxCredentialBlobBytes {
+		return syscall.EINVAL
+	}
+	targetName, err := syscall.UTF16PtrFromString(target)
+	if err != nil {
+		return err
+	}
+	input := credential{
+		Type:               credentialTypeGeneric,
+		TargetName:         targetName,
+		CredentialBlobSize: uint32(len(value)),
+		CredentialBlob:     &value[0],
+		Persist:            credentialPersistLocalMachine,
+	}
+	r1, _, e1 := syscall.SyscallN(procCredWriteW.Addr(), uintptr(unsafe.Pointer(&input)), 0)
+	runtime.KeepAlive(value)
+	runtime.KeepAlive(targetName)
+	if r1 == 0 {
+		return errnoErr(e1)
+	}
+	return nil
+}
+
+func credDelete(target string) error {
+	targetName, err := syscall.UTF16PtrFromString(target)
+	if err != nil {
+		return err
+	}
+	r1, _, e1 := syscall.SyscallN(procCredDeleteW.Addr(),
+		uintptr(unsafe.Pointer(targetName)),
+		uintptr(credentialTypeGeneric),
+		0)
+	if r1 == 0 {
+		return errnoErr(e1)
+	}
+	return nil
+}
+
+func errnoErr(e syscall.Errno) error {
+	if e == 0 {
+		return syscall.EINVAL
+	}
+	return e
 }

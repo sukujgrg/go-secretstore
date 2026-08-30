@@ -6,16 +6,17 @@ A small Go library for the current user's native protected secret store.
 Module path: `github.com/sukujgrg/go-secretstore`.
 
 There is **no file, environment, command-line, or alternate-store fallback**.
-CGO talks to the OS store on each supported platform. There are **no Go module
-dependencies**.
+There are **no Go module dependencies**. macOS and Linux use CGO; Windows uses
+stdlib syscalls.
 
 | Platform | Backend | Build requirement |
 | --- | --- | --- |
 | macOS | Security.framework generic passwords | CGO, `Security` + `CoreFoundation` |
 | Linux | libsecret / Freedesktop Secret Service | CGO, `pkg-config` `libsecret-1` |
-| Windows | Credential Manager (`CredReadW` / `CredWriteW` / `CredDeleteW`) | CGO, `advapi32` |
+| Windows | Credential Manager (`CredReadW` / `CredWriteW` / `CredDeleteW`) | stdlib `syscall` + `advapi32` (no CGO) |
 
-A `CGO_ENABLED=0` build compiles, but `Open` returns `unsupported`.
+A `CGO_ENABLED=0` build compiles everywhere. On macOS and Linux, `Open` then
+returns `unsupported`. On Windows the syscall backend still works.
 
 ## Library
 
