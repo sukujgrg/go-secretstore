@@ -20,7 +20,7 @@ func TestPlatformNativeStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("native store prerequisite or open failed: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
 		t.Fatal(err)

@@ -79,7 +79,7 @@ flags:
 			fmt.Fprintf(os.Stderr, "secretstore: %v\n", err)
 			return 1
 		}
-		defer secret.Close()
+		defer func() { _ = secret.Close() }()
 		value, err := secret.Bytes()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "secretstore: %v\n", err)
