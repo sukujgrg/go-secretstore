@@ -131,7 +131,7 @@ func credRead(target string) ([]byte, error) {
 	if r1 == 0 {
 		return nil, errnoErr(e1)
 	}
-	defer syscall.SyscallN(procCredFree.Addr(), uintptr(unsafe.Pointer(result)))
+	defer credFree(unsafe.Pointer(result))
 	if result == nil || result.CredentialBlobSize == 0 || result.CredentialBlobSize > maxCredentialBlobBytes || result.CredentialBlob == nil {
 		return nil, syscall.EINVAL
 	}
@@ -175,6 +175,10 @@ func credDelete(target string) error {
 		return errnoErr(e1)
 	}
 	return nil
+}
+
+func credFree(buffer unsafe.Pointer) {
+	_, _, _ = syscall.SyscallN(procCredFree.Addr(), uintptr(buffer))
 }
 
 func errnoErr(e syscall.Errno) error {

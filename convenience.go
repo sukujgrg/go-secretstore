@@ -10,7 +10,7 @@ func Get(ctx context.Context, service, account string, opts ...Option) (*Secret,
 	if err != nil {
 		return nil, err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	return store.Get(ctx, Key{Service: service, Account: account})
 }
 
@@ -20,7 +20,7 @@ func Set(ctx context.Context, service, account string, secret []byte, opts ...Op
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	return store.Set(ctx, Key{Service: service, Account: account}, secret)
 }
 
@@ -30,6 +30,6 @@ func Delete(ctx context.Context, service, account string, opts ...Option) error 
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	return store.Delete(ctx, Key{Service: service, Account: account})
 }
