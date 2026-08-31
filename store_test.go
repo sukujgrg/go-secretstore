@@ -135,6 +135,28 @@ func TestSetDoesNotRetainCallerSlice(t *testing.T) {
 	}
 }
 
+func TestRunNativeMutationCancellationSemantics(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	err := runNativeMutation(cancelled, "set", "native", func() error {
+		called = true
+		return nil
+	})
+	if called || CodeOf(err) != OperationCancelled || !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-cancelled mutation: called=%v, err=%v", called, err)
+	}
+
+	inFlight, cancelInFlight := context.WithCancel(context.Background())
+	err = runNativeMutation(inFlight, "set", "native", func() error {
+		cancelInFlight()
+		return nil
+	})
+	if err != nil || !errors.Is(inFlight.Err(), context.Canceled) {
+		t.Fatalf("successful in-flight mutation = %v", err)
+	}
+}
+
 func TestValidationAndCancellation(t *testing.T) {
 	store := OpenMemory()
 	for _, key := range []Key{{}, {Service: "s", Account: ""}, {Service: "s\n", Account: "a"}, {Service: "s", Account: string([]byte{0xff})}} {
