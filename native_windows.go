@@ -75,29 +75,21 @@ func (b *credentialManagerBackend) get(ctx context.Context, key Key) ([]byte, er
 }
 
 func (b *credentialManagerBackend) set(ctx context.Context, key Key, value []byte) error {
-	if err := ctx.Err(); err != nil {
-		return contextError("set", b.name(), err)
-	}
-	if err := credWrite(windowsTarget(key), value); err != nil {
-		return b.mapError("set", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return contextError("set", b.name(), err)
-	}
-	return nil
+	return runNativeMutation(ctx, "set", b.name(), func() error {
+		if err := credWrite(windowsTarget(key), value); err != nil {
+			return b.mapError("set", err)
+		}
+		return nil
+	})
 }
 
 func (b *credentialManagerBackend) delete(ctx context.Context, key Key) error {
-	if err := ctx.Err(); err != nil {
-		return contextError("delete", b.name(), err)
-	}
-	if err := credDelete(windowsTarget(key)); err != nil {
-		return b.mapError("delete", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return contextError("delete", b.name(), err)
-	}
-	return nil
+	return runNativeMutation(ctx, "delete", b.name(), func() error {
+		if err := credDelete(windowsTarget(key)); err != nil {
+			return b.mapError("delete", err)
+		}
+		return nil
+	})
 }
 
 func (*credentialManagerBackend) close() error { return nil }
@@ -131,7 +123,7 @@ func credRead(target string) ([]byte, error) {
 	if r1 == 0 {
 		return nil, errnoErr(e1)
 	}
-	defer credFree(unsafe.Pointer(result))
+	defer credClearFree(result)
 	if result == nil || result.CredentialBlobSize == 0 || result.CredentialBlobSize > maxCredentialBlobBytes || result.CredentialBlob == nil {
 		return nil, syscall.EINVAL
 	}
@@ -179,6 +171,23 @@ func credDelete(target string) error {
 
 func credFree(buffer unsafe.Pointer) {
 	_, _, _ = syscall.SyscallN(procCredFree.Addr(), uintptr(buffer))
+}
+
+func credClearFree(value *credential) {
+	if value == nil {
+		return
+	}
+	clearCredentialBlob(value)
+	credFree(unsafe.Pointer(value))
+}
+
+func clearCredentialBlob(value *credential) {
+	if value.CredentialBlob == nil || value.CredentialBlobSize == 0 {
+		return
+	}
+	blob := unsafe.Slice(value.CredentialBlob, int(value.CredentialBlobSize))
+	clear(blob)
+	runtime.KeepAlive(blob)
 }
 
 func errnoErr(e syscall.Errno) error {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestCodeOfAndErrorText(t *testing.T) {
@@ -39,5 +40,26 @@ func TestCodeOfAndErrorText(t *testing.T) {
 	}
 	if contextError("get", "memory", errors.New("other")) != nil {
 		t.Fatal("contextError should ignore unrelated errors")
+	}
+}
+
+func TestCancellationErrorOnlyWrapsCancelledContext(t *testing.T) {
+	native := cancellationError(context.Background(), "get", "native")
+	if CodeOf(native) != OperationCancelled || errors.Is(native, context.Canceled) {
+		t.Fatalf("native cancellation = %v", native)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	caller := cancellationError(cancelled, "get", "native")
+	if CodeOf(caller) != OperationCancelled || !errors.Is(caller, context.Canceled) {
+		t.Fatalf("caller cancellation = %v", caller)
+	}
+
+	expired, expire := context.WithDeadline(context.Background(), time.Unix(1, 0))
+	defer expire()
+	deadline := cancellationError(expired, "get", "native")
+	if CodeOf(deadline) != DeadlineExceeded || !errors.Is(deadline, context.DeadlineExceeded) {
+		t.Fatalf("deadline cancellation = %v", deadline)
 	}
 }

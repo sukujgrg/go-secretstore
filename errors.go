@@ -68,3 +68,13 @@ func contextError(op, backend string, err error) error {
 	}
 	return nil
 }
+
+// cancellationError preserves a caller cancellation cause only when the
+// supplied context was actually cancelled. Native user-interface cancellation
+// is otherwise reported without pretending that the caller cancelled ctx.
+func cancellationError(ctx context.Context, op, backend string) error {
+	if err := contextError(op, backend, ctx.Err()); err != nil {
+		return err
+	}
+	return storeError(OperationCancelled, op, backend, nil)
+}

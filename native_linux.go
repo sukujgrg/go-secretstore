@@ -10,6 +10,16 @@ package secretstore
 #include <stdlib.h>
 #include <string.h>
 
+static void ss_clear_free(void *value, size_t length) {
+	if (value == NULL) return;
+	volatile unsigned char *bytes = (volatile unsigned char *)value;
+	while (length > 0) {
+		*bytes++ = 0;
+		length--;
+	}
+	free(value);
+}
+
 enum {
 	SS_OK = 0,
 	SS_NOT_FOUND,
@@ -113,7 +123,7 @@ static int ss_unlock_collection(ss_linux_store *store, SecretCollection *collect
 
 int ss_linux_get(ss_linux_store *store, const void *service, size_t service_len,
 		const void *account, size_t account_len, int allow_ui,
-		void **output, size_t *output_len) {
+		size_t max_output_len, void **output, size_t *output_len) {
 	*output = NULL;
 	*output_len = 0;
 	GHashTable *attrs = ss_attrs(service, service_len, account, account_len);
@@ -160,6 +170,11 @@ int ss_linux_get(ss_linux_store *store, const void *service, size_t service_len,
 		secret_value_unref(secret);
 		g_list_free_full(items, g_object_unref);
 		return SS_BACKEND;
+	}
+	if (length > max_output_len) {
+		secret_value_unref(secret);
+		g_list_free_full(items, g_object_unref);
+		return SS_LIMIT;
 	}
 	void *copy = malloc(length);
 	if (copy == NULL) {
@@ -285,7 +300,7 @@ func openNative(ctx context.Context, configuration options) (backend, error) {
 	var native *C.ss_linux_store
 	status := C.ss_linux_open(&native)
 	if status != C.SS_OK {
-		return nil, mapLinuxStatus("open", "linux-secret-service", status)
+		return nil, mapLinuxStatus(ctx, "open", "linux-secret-service", status)
 	}
 	return &secretServiceBackend{store: native, interaction: configuration.interaction}, nil
 }
@@ -303,12 +318,13 @@ func (b *secretServiceBackend) get(ctx context.Context, key Key) ([]byte, error)
 	var output unsafe.Pointer
 	var outputLength C.size_t
 	status := C.ss_linux_get(b.store, unsafe.Pointer(&service[0]), C.size_t(len(service)),
-		unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI(), &output, &outputLength)
+		unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI(), C.size_t(maxSecretBytes),
+		&output, &outputLength)
 	if output != nil {
-		defer C.free(output)
+		defer C.ss_clear_free(output, outputLength)
 	}
 	if status != C.SS_OK {
-		return nil, mapLinuxStatus("get", b.name(), status)
+		return nil, mapLinuxStatus(ctx, "get", b.name(), status)
 	}
 	if uint64(outputLength) > uint64(maxSecretBytes) {
 		return nil, storeError(ResourceLimit, "get", b.name(), nil)
@@ -324,40 +340,32 @@ func (b *secretServiceBackend) get(ctx context.Context, key Key) ([]byte, error)
 func (b *secretServiceBackend) set(ctx context.Context, key Key, value []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return contextError("set", b.name(), err)
-	}
-	service := []byte(key.Service)
-	account := []byte(key.Account)
-	status := C.ss_linux_set(b.store, unsafe.Pointer(&service[0]), C.size_t(len(service)),
-		unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI(),
-		unsafe.Pointer(&value[0]), C.size_t(len(value)))
-	if status != C.SS_OK {
-		return mapLinuxStatus("set", b.name(), status)
-	}
-	if err := ctx.Err(); err != nil {
-		return contextError("set", b.name(), err)
-	}
-	return nil
+	return runNativeMutation(ctx, "set", b.name(), func() error {
+		service := []byte(key.Service)
+		account := []byte(key.Account)
+		status := C.ss_linux_set(b.store, unsafe.Pointer(&service[0]), C.size_t(len(service)),
+			unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI(),
+			unsafe.Pointer(&value[0]), C.size_t(len(value)))
+		if status != C.SS_OK {
+			return mapLinuxStatus(ctx, "set", b.name(), status)
+		}
+		return nil
+	})
 }
 
 func (b *secretServiceBackend) delete(ctx context.Context, key Key) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return contextError("delete", b.name(), err)
-	}
-	service := []byte(key.Service)
-	account := []byte(key.Account)
-	status := C.ss_linux_delete(b.store, unsafe.Pointer(&service[0]), C.size_t(len(service)),
-		unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI())
-	if status != C.SS_OK {
-		return mapLinuxStatus("delete", b.name(), status)
-	}
-	if err := ctx.Err(); err != nil {
-		return contextError("delete", b.name(), err)
-	}
-	return nil
+	return runNativeMutation(ctx, "delete", b.name(), func() error {
+		service := []byte(key.Service)
+		account := []byte(key.Account)
+		status := C.ss_linux_delete(b.store, unsafe.Pointer(&service[0]), C.size_t(len(service)),
+			unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI())
+		if status != C.SS_OK {
+			return mapLinuxStatus(ctx, "delete", b.name(), status)
+		}
+		return nil
+	})
 }
 
 func (b *secretServiceBackend) close() error {
@@ -377,7 +385,7 @@ func (b *secretServiceBackend) allowUI() C.int {
 	return 0
 }
 
-func mapLinuxStatus(op, backend string, status C.int) error {
+func mapLinuxStatus(ctx context.Context, op, backend string, status C.int) error {
 	switch status {
 	case C.SS_NOT_FOUND:
 		return storeError(NotFound, op, backend, nil)
@@ -388,7 +396,7 @@ func mapLinuxStatus(op, backend string, status C.int) error {
 	case C.SS_UNSUPPORTED:
 		return storeError(Unsupported, op, backend, nil)
 	case C.SS_CANCELLED:
-		return storeError(OperationCancelled, op, backend, context.Canceled)
+		return cancellationError(ctx, op, backend)
 	case C.SS_LIMIT:
 		return storeError(ResourceLimit, op, backend, nil)
 	default:

@@ -10,6 +10,16 @@ package secretstore
 #include <stdlib.h>
 #include <string.h>
 
+static void ss_clear_free(void *value, size_t length) {
+	if (value == NULL) return;
+	volatile unsigned char *bytes = (volatile unsigned char *)value;
+	while (length > 0) {
+		*bytes++ = 0;
+		length--;
+	}
+	free(value);
+}
+
 static CFStringRef ss_string(const void *bytes, size_t length) {
 	return CFStringCreateWithBytes(kCFAllocatorDefault, bytes, (CFIndex)length,
 		kCFStringEncodingUTF8, false);
@@ -43,7 +53,7 @@ static CFMutableDictionaryRef ss_query(const void *service, size_t service_len,
 
 static OSStatus ss_keychain_get(const void *service, size_t service_len,
 		const void *account, size_t account_len, int allow_ui,
-		void **output, size_t *output_len) {
+		size_t max_output_len, void **output, size_t *output_len) {
 	*output = NULL;
 	*output_len = 0;
 	CFMutableDictionaryRef query = ss_query(service, service_len, account, account_len, allow_ui);
@@ -63,6 +73,10 @@ static OSStatus ss_keychain_get(const void *service, size_t service_len,
 	if (length <= 0) {
 		CFRelease(result);
 		return errSecDecode;
+	}
+	if ((size_t)length > max_output_len) {
+		CFRelease(result);
+		return errSecDataTooLarge;
 	}
 	void *copy = malloc((size_t)length);
 	if (copy == NULL) {
@@ -137,9 +151,10 @@ func (b *keychainBackend) get(ctx context.Context, key Key) ([]byte, error) {
 	var output unsafe.Pointer
 	var outputLength C.size_t
 	status := C.ss_keychain_get(unsafe.Pointer(&service[0]), C.size_t(len(service)),
-		unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI(), &output, &outputLength)
+		unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI(), C.size_t(maxSecretBytes),
+		&output, &outputLength)
 	if output != nil {
-		defer C.free(output)
+		defer C.ss_clear_free(output, outputLength)
 	}
 	if status != C.errSecSuccess {
 		return nil, b.mapStatus("get", status)
@@ -156,38 +171,30 @@ func (b *keychainBackend) get(ctx context.Context, key Key) ([]byte, error) {
 }
 
 func (b *keychainBackend) set(ctx context.Context, key Key, value []byte) error {
-	if err := ctx.Err(); err != nil {
-		return contextError("set", b.name(), err)
-	}
-	service := []byte(key.Service)
-	account := []byte(key.Account)
-	status := C.ss_keychain_set(unsafe.Pointer(&service[0]), C.size_t(len(service)),
-		unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI(),
-		unsafe.Pointer(&value[0]), C.size_t(len(value)))
-	if status != C.errSecSuccess {
-		return b.mapStatus("set", status)
-	}
-	if err := ctx.Err(); err != nil {
-		return contextError("set", b.name(), err)
-	}
-	return nil
+	return runNativeMutation(ctx, "set", b.name(), func() error {
+		service := []byte(key.Service)
+		account := []byte(key.Account)
+		status := C.ss_keychain_set(unsafe.Pointer(&service[0]), C.size_t(len(service)),
+			unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI(),
+			unsafe.Pointer(&value[0]), C.size_t(len(value)))
+		if status != C.errSecSuccess {
+			return b.mapStatus("set", status)
+		}
+		return nil
+	})
 }
 
 func (b *keychainBackend) delete(ctx context.Context, key Key) error {
-	if err := ctx.Err(); err != nil {
-		return contextError("delete", b.name(), err)
-	}
-	service := []byte(key.Service)
-	account := []byte(key.Account)
-	status := C.ss_keychain_delete(unsafe.Pointer(&service[0]), C.size_t(len(service)),
-		unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI())
-	if status != C.errSecSuccess {
-		return b.mapStatus("delete", status)
-	}
-	if err := ctx.Err(); err != nil {
-		return contextError("delete", b.name(), err)
-	}
-	return nil
+	return runNativeMutation(ctx, "delete", b.name(), func() error {
+		service := []byte(key.Service)
+		account := []byte(key.Account)
+		status := C.ss_keychain_delete(unsafe.Pointer(&service[0]), C.size_t(len(service)),
+			unsafe.Pointer(&account[0]), C.size_t(len(account)), b.allowUI())
+		if status != C.errSecSuccess {
+			return b.mapStatus("delete", status)
+		}
+		return nil
+	})
 }
 
 func (*keychainBackend) close() error { return nil }
@@ -209,6 +216,8 @@ func (b *keychainBackend) mapStatus(op string, status C.OSStatus) error {
 		return storeError(PermissionDenied, op, b.name(), nil)
 	case C.errSecUserCanceled:
 		return storeError(OperationCancelled, op, b.name(), nil)
+	case C.errSecDataTooLarge, C.errSecAllocate:
+		return storeError(ResourceLimit, op, b.name(), nil)
 	default:
 		return storeError(BackendFailure, op, b.name(), nil)
 	}

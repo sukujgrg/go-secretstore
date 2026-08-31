@@ -19,6 +19,48 @@ stdlib syscalls.
 A `CGO_ENABLED=0` build compiles everywhere. On macOS and Linux, `Open` then
 returns `unsupported`. On Windows the syscall backend still works.
 
+## Why this library?
+
+Most cross-platform Go keyring packages optimize for either easy static builds
+or a broad choice of storage backends. `go-secretstore` makes a narrower choice:
+one protected store per OS, accessed through the platform's native client API,
+with no silent downgrade to a different kind of storage.
+
+| Design choice | `go-secretstore` behavior |
+| --- | --- |
+| Native API boundary | Calls Security.framework on macOS, libsecret on Linux, and Credential Manager on Windows; it does not start a helper command. |
+| Fail closed | If the native store is unavailable, the native operation fails. It never falls back to a file, environment variable, `pass`, kernel keyring, or another provider. |
+| Interaction control | Native authentication and unlock UI is denied by default and must be enabled explicitly. |
+| Secret representation | Secrets are bounded binary `[]byte` values rather than strings. Returned values have explicit ownership and clearing semantics. |
+| Errors | Operations return stable, backend-neutral `ErrorCode` values; rendered errors contain neither the key nor the secret. |
+| Dependency surface | The module has no Go dependencies. macOS and Linux deliberately trade simple static cross-compilation for native framework/library dependencies. |
+
+This is intentionally different from
+[`zalando/go-keyring`](https://github.com/zalando/go-keyring), which favors
+CGO-free/static builds, invokes `/usr/bin/security` on macOS, and implements the
+Linux Secret Service client in Go over D-Bus. It is also narrower than
+[`99designs/keyring`](https://github.com/99designs/keyring), which provides a
+richer, configurable abstraction over native stores plus alternatives such as
+`pass`, kernel keyrings, and encrypted files.
+
+### Why CGO on macOS and Linux?
+
+CGO is not inherently more secure, and it does not prevent a secret from
+appearing in Go or native memory. It is a better fit for this package's goal of
+being a thin native-store adapter: the implementation can pass binary data
+directly, use native status codes and interaction flags, and rely on the
+platform client library's object and session lifecycle. It also avoids a child
+process, command input/output encoding, and parsing command text as an API.
+
+On Linux, libsecret is itself a client for the Freedesktop Secret Service over
+D-Bus. The choice is therefore not “native calls instead of D-Bus”; it is to let
+libsecret own that protocol and session behavior rather than reimplementing it
+in Go.
+
+The cost is real: macOS and Linux builds need CGO, a C toolchain, and the native
+development files. If a single static binary or easy cross-compilation matters
+more than this API fidelity, a CGO-free library is likely the better choice.
+
 ## Library
 
 ```go
@@ -53,6 +95,12 @@ fallback.
 
 Interaction is denied by default. Pass `WithInteraction(InteractionAllowed)`
 when the native store may show its own unlock or authentication UI.
+
+The native APIs are synchronous and cannot be forcibly interrupted by a Go
+context once entered. A cancelled context prevents a native operation from
+starting; a cancelled `Get` discards a value returned afterward. Once `Set` or
+`Delete` starts, its native result is authoritative, so a successful mutation
+is not reported as cancelled.
 
 Errors use stable `ErrorCode` values and never include the secret or key.
 `Secret.Close` clears the buffer owned by the returned `Secret`. `Set` copies

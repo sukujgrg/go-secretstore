@@ -89,6 +89,17 @@ type backend interface {
 	close() error
 }
 
+// runNativeMutation checks cancellation before entering a synchronous native
+// mutation. Once mutate starts, its result is authoritative: reporting a
+// context error after native success would leave the caller unable to tell
+// whether the mutation took effect.
+func runNativeMutation(ctx context.Context, op, backend string, mutate func() error) error {
+	if err := ctx.Err(); err != nil {
+		return contextError(op, backend, err)
+	}
+	return mutate()
+}
+
 type store struct {
 	mu      sync.RWMutex
 	closed  bool
